@@ -56,29 +56,27 @@ def test_explainer(n_explainer_runs, at_defaults, rf_classifier, explainer, test
     """
 
     # fixture returns a fitted AnchorTabular explainer
-    X_test, explnr, predict_fn, predict_type = explainer
+    X_test, explainer, predict_fn, predict_type = explainer
     # the explainer fixtures are module scoped, we ensure that we don't mutate them
-    assert not hasattr(explnr, 'mab')
-    test_explainer = copy.deepcopy(explnr)
 
     if predict_type == 'proba':
         instance_label = np.argmax(predict_fn(X_test[test_instance_idx, :].reshape(1, -1)), axis=1)
     else:
         instance_label = predict_fn(X_test[test_instance_idx, :].reshape(1, -1))[0]
 
-    test_explainer.instance_label = instance_label
+    explainer.instance_label = instance_label
 
     explain_defaults = at_defaults
     threshold = explain_defaults['desired_confidence']
     n_covered_ex = explain_defaults['n_covered_ex']
 
     for _ in range(n_explainer_runs):
-        explanation = test_explainer.explain(X_test[test_instance_idx], threshold=threshold, **explain_defaults)
-        assert test_explainer.instance_label == instance_label
+        explanation = explainer.explain(X_test[test_instance_idx], threshold=threshold, **explain_defaults)
+        assert explainer.instance_label == instance_label
         assert explanation['precision'] >= threshold
         assert explanation['coverage'] >= 0.05
 
-    sampler = test_explainer.samplers[0]
+    sampler = explainer.samplers[0]
     assert sampler.instance_label == instance_label
     assert sampler.n_covered_ex == n_covered_ex
 
