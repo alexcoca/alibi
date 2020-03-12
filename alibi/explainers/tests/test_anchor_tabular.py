@@ -1,5 +1,4 @@
 # flake8: noqa E731
-import copy
 from collections import OrderedDict
 
 import numpy as np
@@ -33,8 +32,12 @@ def uncollect_if_test_explainer(**kwargs):
     exp_dataset = kwargs['explainer'].name
     clf_dataset = clf_dataset.split("_")[1]
     exp_dataset = exp_dataset.split("_")[1]
-    if clf_dataset != exp_dataset:
-        return True
+
+    conditions = [
+        clf_dataset != exp_dataset,
+    ]
+
+    return any(conditions)
 
 
 @pytest.mark.uncollect_if(func=uncollect_if_test_explainer)
@@ -52,7 +55,7 @@ def uncollect_if_test_explainer(**kwargs):
 @pytest.mark.parametrize('test_instance_idx', [0], ids='test_instance_idx={}'.format)
 def test_explainer(n_explainer_runs, at_defaults, rf_classifier, explainer, test_instance_idx):
     """
-    Convergence test on Adult and iris datasets.
+    Convergence test on Adult and Iris datasets.
     """
 
     # fixture returns a fitted AnchorTabular explainer
@@ -160,114 +163,63 @@ def test_distributed_anchor_tabular(ncpu,
             assert distrib_anchor_beam.state['t_positives'][anchor] == current_state['t_positives'][anchor] + p
 
 
+def uncollect_if_test_sampler(**kwargs):
+
+    clf_dataset = kwargs['rf_classifier'].name
+    exp_dataset = kwargs['explainer'].name
+    dataset = kwargs['dataset'].name
+    clf_dataset = clf_dataset.split("_")[1]
+    exp_dataset = exp_dataset.split("_")[1]
+    dataset_name = dataset.split("_")[1]
+
+    conditions = [
+        len({exp_dataset, clf_dataset, dataset_name}) != 1,
+    ]
+
+    return any(conditions)
+
+
+@pytest.mark.uncollect_if(func=uncollect_if_test_sampler)
+@pytest.mark.parametrize('test_instance_idx', [0], ids='test_instance_idx={}'.format)
+@pytest.mark.parametrize('nb_samples', [100], ids='nb_samples={}'.format)
+@pytest.mark.parametrize('anchors', [((2, ), (10, ),  (11, ), (7, 10, 11), (3, 11))], ids='anchors={}'.format)
+@pytest.mark.parametrize('dataset',
+                         [pytest.lazy_fixture('get_adult_dataset'),  pytest.lazy_fixture('get_iris_dataset')],
+                         ids='dataset={}'.format,
+                         )
 @pytest.mark.parametrize('rf_classifier',
-                         [pytest.lazy_fixture('get_iris_dataset')],
+                         [pytest.lazy_fixture('get_adult_dataset'),  pytest.lazy_fixture('get_iris_dataset')],
                          indirect=True,
                          ids='clf=rf_{}'.format,
                          )
-@pytest.mark.parametrize('anchors', [((2, ), (10, ),  (11, ), (7, 10, 11), (3, 11))], ids='anchors={}'.format)
-@pytest.mark.parametrize('test_instance_idx', [0], ids='test_instance_idx={}'.format)
-def test_iris_sampler(rf_classifier, at_iris_explainer, anchors, test_instance_idx):
+@pytest.mark.parametrize('explainer',
+                         [pytest.lazy_fixture('at_iris_explainer'), pytest.lazy_fixture('at_adult_explainer')],
+                         ids='exp={}'.format,
+                         )
+def test_sampler(test_instance_idx, anchors, nb_samples, dataset, rf_classifier, explainer):
     """
-    Tests the sampler works for a dataset that contains only discretized numerical variables.
+    Test sampler for datasets that contain continuos only or continuous and categorical variables.
     """
-
-    # inputs
-    nb_samples = 100  # nb samples to draw when testing sampling
 
     # fixture returns a fitted AnchorTabular explainer
-    X_test, explainer, predict_fn, predict_type = at_iris_explainer
+    X_test, explainer, predict_fn, predict_type = explainer
+    test_dataset = dataset
+    test_dataset_name = test_dataset['metadata']['name']
 
     # test sampler setup is correct
     assert len(explainer.samplers) == 1
     sampler = explainer.samplers[0]
     assert explainer.predictor(X_test[test_instance_idx].reshape(1, -1)).shape == (1,)
-    assert sampler.train_data.shape == sampler.d_train_data.shape == (145, 4)
-    assert (np.unique(sampler.d_train_data) == np.array([0., 1., 2., 3.])).all()
-    assert not sampler.categorical_features
-    assert len(sampler.numerical_features) == X_test.shape[1]
+    assert sampler.train_data.shape == sampler.d_train_data.shape == test_dataset['X_train'].shape
 
-    if predict_type == 'proba':
-        instance_label = np.argmax(predict_fn(X_test[test_instance_idx, :].reshape(1, -1)), axis=1)
-    else:
-        instance_label = predict_fn(X_test[test_instance_idx, :].reshape(1, -1))[0]
-
-    explainer.instance_label = instance_label
-
-    # test sampling function end2end
-    train_data = sampler.train_data
-    train_data_mean = np.mean(train_data, axis=0)
-    train_data_3std = 3*np.std(train_data, axis=0)
-    sampler.build_lookups(X_test[test_instance_idx, :])
-    n_covered_ex = sampler.n_covered_ex
-
-    for anchor in anchors:
-        cov_true, cov_false, labels, data, coverage, anchor_pos = sampler((0, anchor), nb_samples)
-        assert cov_true.shape[0] <= n_covered_ex
-        assert cov_false.shape[0] <= n_covered_ex
-        assert len(labels) == nb_samples
-        assert len(sampler.enc2feat_idx) == data.shape[1]
-        assert coverage != -1
-
-        # test lookups dictionary used for sampling
-        ord_feats = sampler.ord_lookup.keys()
-        cat_feats = sampler.cat_lookup.keys()
-        enc_feats = sampler.enc2feat_idx.keys()
-        assert (set(ord_feats | set(cat_feats))) == set(enc_feats)
-
-        # now test perturbation method ...
-
-        # Find out which bins can be sampled for categorical vars and check the data is sampled correctly
-        allowed_bins, allowed_rows, unk_feat_vals = sampler.get_features_index(anchor)
-        raw_data, disc_data, coverage = sampler.perturbation(anchor, nb_samples)
-        assert not unk_feat_vals
-        assert coverage != -1
-        assert raw_data.shape[0] == disc_data.shape[0] == nb_samples
-
-        uniq_feat_ids = list(OrderedDict.fromkeys([sampler.enc2feat_idx[enc_idx] for enc_idx in anchor]))
-        uniq_feat_ids = [feat for feat in uniq_feat_ids if feat not in [f for f, _, _ in unk_feat_vals]]
-        expected_bins = [allowed_bins[feat_id] for feat_id in uniq_feat_ids]
-
-        for bins, feat_id in zip(expected_bins, uniq_feat_ids):
-            sampled_bins_uniq = set(np.unique(disc_data[:, feat_id]))
-            # check that we have replaced features properly with values from the same bin
-            assert bins - sampled_bins_uniq == set()
-            assert sampled_bins_uniq - bins == set()
-            raw_data_mean = np.mean(raw_data, axis=0)
-            # check features sampled are in the correct range
-            assert (train_data_mean + train_data_3std - raw_data_mean > 0).all()
-            assert (train_data_mean - train_data_3std - raw_data_mean < 0).all()
-
-
-@pytest.mark.parametrize('anchors', [((2, ), (10, ),  (11, ), (7, 10, 11), (3, 11))], ids='anchors={}'.format)
-@pytest.mark.parametrize('rf_classifier',
-                         [pytest.lazy_fixture('get_adult_dataset')],
-                         indirect=True,
-                         ids='clf=rf_{}'.format,
-                         )
-@pytest.mark.parametrize('test_instance_idx', [0], ids='test_instance_idx={}'.format)
-def test_adult_sampler(anchors, rf_classifier, at_adult_explainer, get_adult_dataset, test_instance_idx):
-    """
-    Tests sampler works as expected for a dataset with both discretized numerical variables and
-    categorical variables.
-    """
-
-    # inputs
-    nb_samples = 100   # nb samples to draw when testing sampling
-    # used for detailed sampler testing ...
-
-    # fixture returns a fitted AnchorTabular explainer, persistent across tests
-    X_test, explainer, predict_fn, predict_type = at_adult_explainer
-    data = get_adult_dataset
-    category_map = data['metadata']['category_map']
-
-    # test sampler setup is correct
-    assert len(explainer.samplers) == 1
-    sampler = explainer.samplers[0]
-    assert explainer.predictor(X_test[test_instance_idx].reshape(1, -1)).shape == (1,)
-    assert sampler.train_data.shape == sampler.d_train_data.shape == (30000, 12)
-    assert len(sampler.categorical_features) == len(category_map.keys())
-    assert len(sampler.numerical_features) == X_test.shape[1] - len(category_map.keys())
+    if test_dataset_name == 'adult':
+        category_map = test_dataset['metadata']['category_map']
+        assert len(sampler.categorical_features) == len(category_map.keys())
+        assert len(sampler.numerical_features) == X_test.shape[1] - len(category_map.keys())
+    elif test_dataset_name == 'iris':
+        assert (np.unique(sampler.d_train_data) == np.array([0., 1., 2., 3.])).all()
+        assert not sampler.categorical_features
+        assert len(sampler.numerical_features) == X_test.shape[1]
 
     if predict_type == 'proba':
         instance_label = np.argmax(predict_fn(X_test[test_instance_idx, :].reshape(1, -1)), axis=1)
@@ -330,6 +282,7 @@ def test_adult_sampler(anchors, rf_classifier, at_adult_explainer, get_adult_dat
         for bins, feat_id in zip(expected_values, uniq_feat_ids):
             sampled_bins_uniq = set(np.unique(disc_data[:, feat_id]))
 
+            # check that we have replaced features properly with values from the same bin
             assert bins - sampled_bins_uniq == set()
             assert sampled_bins_uniq - bins == set()
             raw_data_mean = np.mean(raw_data, axis=0)[sampler.numerical_features]
