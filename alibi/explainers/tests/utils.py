@@ -14,9 +14,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler, OneHotEncoder
 
 from alibi.datasets import fetch_movie_sentiment, fetch_adult
-# from alibi.tests
+
 SUPPORTED_DATASETS = ['adult', 'fashion_mnist', 'iris', 'movie_sentiment']
 
+
+# When registring a dataset, add the dataset name in ['meta']['name'] and
+# add its name to SUPPORTED_DATASETS. Follow the convention for the naming
+# of the function and the output as shown below
 
 def adult_dataset():
     """
@@ -57,6 +61,7 @@ def adult_dataset():
         'metadata': {
             'feature_names': feature_names,
             'category_map': category_map,
+            'name': 'adult'
         }
     }
 
@@ -77,7 +82,7 @@ def fashion_mnist_dataset():
         'X_test': x_test,
         'y_test': y_test,
         'preprocessor': None,
-        'metadata': None,
+        'metadata': {'name': 'fashion_mnist'},
     }
 
 
@@ -100,7 +105,8 @@ def iris_dataset():
         'y_test': Y_test,
         'preprocessor': None,
         'metadata': {
-            'feature_names': feature_names
+            'feature_names': feature_names,
+            'name': 'iris'
         }
     }
 
@@ -124,11 +130,15 @@ def movie_sentiment_dataset():
         'X_test': test,
         'y_test': test_labels,
         'preprocessor': vectorizer,
-        'metadata': None,
+        'metadata': {'name': 'movie_sentiment'},
     }
 
 
 def get_dataset(name):
+    """
+    Returns a dataset given the name, which must be a member of
+    SUPPORTED_DATASETS.
+    """
 
     if name == 'adult':
         return adult_dataset()
@@ -171,6 +181,7 @@ def get_random_matrix(*, n_rows=500, n_cols=100):
     Generates a random matrix with uniformly distributed
     numbers between 0 and 1 for testing puposes.
     """
+
     if n_rows == 0:
         sz = (n_cols, )
     elif n_cols == 0:
