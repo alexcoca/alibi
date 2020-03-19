@@ -188,7 +188,7 @@ def mock_ks_explainer(request):
     """
     pred_out_dim, link = request.param
     predictor = MockPredictor(out_dim=pred_out_dim, seed=0)
-    explainer = KernelShap(predictor=predictor)
+    explainer = KernelShap(predictor=predictor, seed=0)
 
     return explainer
 
@@ -245,7 +245,7 @@ def no_errors(caplog):
 
     caplog.set_level(logging.ERROR)
     yield
-    errors = [record for record in caplog.get_records('call') if record.levelno == logging.WARNING]
+    errors = [record for record in caplog.get_records('call') if record.levelno == logging.ERROR]
     assert not errors
 
 
