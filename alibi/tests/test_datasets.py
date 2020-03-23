@@ -8,7 +8,7 @@ ADULT_DIM = 2
 ADULT_FEATURES = 12
 ADULT_CLASSES = 2
 
-
+# Tests below
 @pytest.mark.parametrize('return_X_y', [True, False])
 def test_adult(return_X_y):
     try:
