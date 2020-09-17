@@ -1,33 +1,111 @@
+import datetime
 import math
 
 import numpy as np
+import tensorflow as tf
 
+from sklearn.model_selection import train_test_split
 from typing import Dict, List, Optional, Tuple
 
 
-class MixedDataEncoder:
+def get_category_unique_idxs(X: np.ndarray, categorical_names: Dict[int, List[str]]) -> \
+        Tuple[Dict[int, Dict[float, float]], int]:
+    """
+    Creates a mapping that is used to translate the categories of each categorical variable in `X` to a unique index.
 
-    def __init__(self, categorical_names: Optional[Dict[int, List[str]]] = None):
-        pass
+    Parameters
+    ----------
+    X
+        Dataset whose categorical columns need to be remapped so that each category is assigned an unique index/
+    categorical_names
+        See `CategoricalEmbedding` constructor.
 
-    def __call__(self, *args, **kwargs):
-        pass
+    Returns
+    -------
+    idx_map
+        A mapping with the structure::
+
+            {
+            0: {0.0: 0.0, 1.0: 1.0}
+            5: {0.0: 2.0, 2.0: 3:0}
+            }
+        The keys are the column indices for categorical variables whereas the values are mappings from the *unique
+        values appearing in the column corresponding to said column index* to unique values. Each categorical variable
+        is encoded in a range values equal to the `len` of the number of unique values appearing in its column.
+    n_unique_levels
+        The sum of the number of keys across the mappings in `idx_map`. This coincides with the sum of the lengths of
+        the lists in `categorical_names` if all levels appear in `X`.
+
+    Notes
+    -----
+        As shown in the example above, the categorical variable in column ``0``  can take 3 values (``0.0``, ``1.0``,
+        ``2.0``) but only two (``0.0``, ``1.0``) are in `X[0,:]`. As a result, `2.0` does not appear as a key in the
+        mapping for the first categorical variable and the unique index `2.0` is assigned to the level encoded as `0.0`
+        of the categorical variable in the 5th column. This ensures the unique indices are contiguous.
+    """
+
+    cat_col_idxs = categorical_names.keys()
+    idx_map = dict.fromkeys(cat_col_idxs)
+    n_unique_levels = 0
+    for idx in cat_col_idxs:
+        current_encoding = np.unique(X[:, idx]).tolist()
+        # might differ from the number of levels in `categorical_names` (e.g., some levels aren't in training data)
+        actual_n_levels = len(current_encoding)
+        idx_map[idx] = dict(
+            zip(current_encoding, np.arange(n_unique_levels, n_unique_levels + actual_n_levels, dtype=np.float32))
+        )
+        n_unique_levels += actual_n_levels
+
+    return idx_map, n_unique_levels
 
 
-class CategoricalEmbedding:
+def remap_column(X: np.ndarray, col_idx: int, uniq_index_map: Dict[float, float]):
+    """
+    Remaps the categorical levels of a column in X to new values, specified by `categories_mapping`.
 
-    def __init__(self,
-                 n_features: int,
-                 embedding_dim: int = 1,
-                 categorical_names: Optional[Dict[int, List[str]]] = None):
+    Parameters
+    ----------
+    X
+        Array whose categorical column will mapped to new levels.
+    col_idx
+        The index of the column to be remapped.
+    uniq_index_map
+        Map of unique values in `X[:, col_idx]` to new indices which are unique across all categorical variables.
 
-        n_embeddings = len(categorical_names.keys())
-        self.embeddings = None
+    Notes
+    -----
+    This function changes `X` in place.
+    """
+    for original_category in np.unique(X[:, col_idx]):
+        X[np.where(X[:, col_idx] == original_category), col_idx] = uniq_index_map[original_category]
 
-    def fit(self, X: np.ndarray):
-        pass
+
+def remap_categorical_levels(X: np.ndarray, uniq_idx_maps: Dict[int, Dict[float, float]]):
+    """
+    Remaps the categorical variables encoded in the columns of `X` such that each categorical level is assigned a unique
+    integer. This is necessary in order to learn an embedding for each level of each categorical variable.
+
+    Parameters
+    ----------
+    X
+        Array whose categorical columns are to be remapped
+    uniq_idx_maps
+        Mapping containing a mapping of indices in `X` to new indices for each categorical variable. See
+        `get_category_unique_idxs` for details
+    """
+    for cat_var_idx in uniq_idx_maps.keys():
+        remap_column(X, cat_var_idx, uniq_idx_maps[cat_var_idx])
 
 
+def permute_columns(X: np.ndarray, categorical_names: Dict[int, List[str]]) -> np.ndarray:
+    """
+    Permutes the columns of `X` such that the categorical variables occupy the first ``len(categorical_names.keys())``
+    columns of the permuted `X` and the continuous variables occupy the remainder of the columns.
+    """
+    raise NotImplementedError
+
+
+# TODO: HANDLE THE CASE WHERE THE DATASET HAS ONLY 1 CATEGORICAL VARIABLE
 class BatchGenerator:
     """
     A class which generates a dataset where each of the categorical variables in a given dataset `X` is set as a
@@ -150,7 +228,7 @@ class BatchGenerator:
 
             yield this_batch, this_batch_targets
 
-        # any remaining data is returned
+        # remaining data is returned
         self.n_processed = 0
         self.dataset_start_idx = 0
         if self.records_buffer.shape[0] != 0:
@@ -158,3 +236,156 @@ class BatchGenerator:
             self.records_buffer, self.targets_buffer = np.array([]), np.array([])
 
             yield last_batch, last_batch_target
+
+
+class MixedDataEmbeddingLayer(tf.keras.layers.Layer):
+
+    def __init__(self,
+                 n_categorical: int,
+                 categories: int,
+                 embeddings_dim: int,
+                 embeddings_mean: bool = False,
+                 **kwargs):
+
+        super(MixedDataEmbeddingLayer, self).__init__()
+        self.n_categorical = n_categorical
+        self.categories = categories
+        self.embeddings_dim = embeddings_dim
+        self.embeddings_mean = embeddings_mean
+        self.embedding_layer = tf.keras.layers.Embedding(
+            categories,
+            embeddings_dim,
+            input_length=n_categorical,
+            **kwargs
+        )
+
+    def call(self, input):
+
+        # combine embeddings
+        if self.embeddings_mean:
+            embedding_part = tf.math.reduce_mean(
+                self.embedding_layer(input[:, :self.n_categorical]), axis=0, keepdims=True
+            )
+        else:
+            embedding_part = tf.math.reduce_sum(
+                self.embedding_layer(input[:, :self.n_categorical]), axis=0, keepdims=True,
+            )
+
+        # add the continuous inputs
+        return tf.concat([embedding_part, input[:, self.n_categorical:]], axis=1)
+
+
+DEFAULT_OPTIMIZER_PARAMS = {
+    'learning_rate': 0.01,
+    'momentum': 0.9,
+}
+"""
+dict: Contains default parameters for the SGD optimizer that trains the embeddings.
+"""
+
+
+class CategoricalEmbedding:
+
+    def __init__(self, categorical_names: Dict[int, List[str]], embedding_dim: int = 1):
+        """
+
+        Parameters
+        ----------
+        categorical_names
+            A dictionary with the following structure::
+
+                {
+                0: ['a', 'b', 'c'],
+                5: ['a', 'b', 'c', 'd'],
+                }
+            The keys indicate that the 0th and 5th columns of `X` are categorical and the list contain the names of the
+            categories. These are assumed to be ordinally encoded in `X` (e.g., the values in the 0th column of `X` are
+            0., 1. and 2. whereas the values in the 5th column are 0., 1., 2., 3.).
+        """
+
+        # TODO: categorical_names docstring can be used to improve all other algos who use it.
+
+        self._fitted = False
+        self.categorical_names = categorical_names
+        self.n_categorical = len(self.categorical_names.keys())
+        self.embedding_dim = embedding_dim
+        # maps the levels of each categorical to a new value so that no two levels across the categorical variables
+        # have the same value
+        self.index_map = {}  # type: Dict[int, Dict[float, float]]
+        # number of levels to encode
+        self.n_embeddings = 0
+        self.model = tf.keras.Sequential()
+        self.category_embeddings = None  # set at fit time
+
+    def fit(self,
+            X: np.ndarray,
+            epochs: int = 30,
+            batch_size: int = 32,
+            test_size: float = 0.2,
+            optimizer: Optional['tf.keras.optimizers.Optimizer'] = None,
+            optimizer_opts: Optional[Dict] = None,
+            seed: Optional[int] = None,
+            **kwargs,
+            ):
+        # TODO: HANDLE SEED PROPERLY (AKA, FIX SEED IN TENSORFLOW TO CONTROL EMBEDDINGS INITIALISATION)
+
+        # remap indices of the input data to unique indices & make sure categorical variables come first
+        self.index_map, self.n_embeddings = get_category_unique_idxs(X, self.categorical_names)
+        remap_categorical_levels(X, self.index_map)
+        X = permute_columns(X, self.categorical_names)
+
+        X_train, X_val = train_test_split(X, test_size=test_size, random_state=seed)
+
+        train_generator = BatchGenerator(X_train, n_categorical=self.n_categorical, batch_size=batch_size, seed=seed)
+        train_dataset = tf.data.Dataset.from_generator(train_generator, (tf.float32, tf.float32))
+        train_dataset = train_dataset.shuffle(self.n_categorical * X.shape[0], seed=seed, reshuffle_each_iteration=True)
+        val_generator = BatchGenerator(X_val, n_categorical=self.n_categorical, batch_size=batch_size, seed=seed)
+        val_dataset = tf.data.Dataset.from_generator(val_generator, (tf.float32, tf.float32))
+
+        self.build_model()
+
+        if optimizer is None:
+            self._set_default_optimizer()
+        else:
+            if optimizer_opts is not None:
+                self.optimizer = optimizer(**optimizer_opts)
+            else:
+                self.optimizer = optimizer()
+
+        self.model.compile(
+            optimizer=self.optimizer,
+            loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
+            metrics=[tf.keras.metrics.SparseCategoricalAccuracy(), tf.keras.metrics.SparseTopKCategoricalAccuracy(k=2)]
+        )
+
+        default_logdir = f"logs/scalars/{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+
+        self.model.fit(
+            x=train_dataset,
+            epochs=epochs,
+            validation_data=val_dataset,
+            verbose=kwargs.get('verbose', 1),
+            callbacks=[tf.keras.callbacks.TensorBoard(log_dir=kwargs.get('log_dir', default_logdir))]
+        )
+        # TODO: NOT SURE THIS WILL WORK ...
+        self.category_embeddings = self.model.layers[0].embedding_layer
+        self._fitted = True
+
+    def build_model(self):
+        # max(self.n_categorical - 1, 1) bc one of the categorical vars is a target
+        self.model.add(MixedDataEmbeddingLayer(max(self.n_categorical - 1, 1), self.n_embeddings, self.embedding_dim))
+        self.model.add(tf.keras.layers.Dense(self.n_embeddings))
+
+    def _set_default_optimizer(self):
+        self.optimizer = tf.keras.optimizers.SGD(**DEFAULT_OPTIMIZER_PARAMS)
+
+    def encode(self, X: np.ndarray) -> np.ndarray:
+        """
+        Encodes the mixed data in `X` using the embeddings for the categories..
+        """
+        remap_categorical_levels(X, self.index_map)
+        X = permute_columns(X, self.categorical_names)
+        # TODO: CAST TO TENSOR BEFORE CALL?
+        return tf.concat(
+            [self.category_embeddings(X[:, :self.n_categorical]), X[:, self.n_categorical:]], axis=1,
+        )
