@@ -358,13 +358,13 @@ class CategoricalEmbedding:
             epochs: int = 30,
             batch_size: int = 32,
             test_size: float = 0.2,
-            optimizer: Optional['tf.keras.optimizers.Optimizer'] = None,
+            optimizer: Optional['tensorflow.keras.optimizers.Optimizer'] = None,
             optimizer_opts: Optional[Dict] = None,
             seed: Optional[int] = None,
             **kwargs,
             ):
 
-        # TODO: CHECK THIS IS ENOUGH
+        # TODO: CHECK THIS IS ENOUGH TO GUARANTEE SOME REPRODUCIBILITY
         tf.random.set_seed(seed)
         # remap indices of the input data to unique indices & make sure categorical variables come first
         self.index_map, self.actual_embeddings = get_category_unique_idxs(X, self.categorical_names)
@@ -442,7 +442,7 @@ class CategoricalEmbedding:
         X = permute_columns(X, self.categorical_names)
         return self.category_embeddings(X)
 
-
+# TODO: WRITE A SIMPLE SCRIPT TO DO THE TRAINING
 from alibi.datasets import fetch_adult
 
 if __name__ == '__main__':
